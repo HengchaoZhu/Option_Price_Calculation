@@ -11,10 +11,12 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
+import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import pandas as pd
+
+from dynamic_iv_sim import HestonParams, OUDriftParams, SimConfig, simulate_paths
 
 
 OptionType = Literal["call", "put"]
@@ -682,95 +684,67 @@ def run_streamlit_app() -> None:
         steps_default = 252 if time_mode == "Trading days" else 400
         steps = st.number_input("Path steps", min_value=20, max_value=10000, value=steps_default, step=10)
     with col_a2:
-        base_drift = st.number_input("Base simulated stock drift", value=0.05, step=0.01, format="%.4f")
-        base_vol = st.number_input("Base implied volatility", value=0.30, min_value=0.0001, step=0.01, format="%.4f")
-        base_risk_free = st.number_input("Base risk-free rate", value=0.025, step=0.005, format="%.4f")
+        base_drift = st.number_input("Initial drift μ0", value=0.05, step=0.01, format="%.4f")
+        base_vol = st.number_input("Initial implied vol σ0", value=0.30, min_value=0.0001, step=0.01, format="%.4f")
+        base_risk_free = st.number_input("Risk-free rate", value=0.025, step=0.005, format="%.4f")
         binom_steps = st.slider("Binomial steps (American pricing)", min_value=10, max_value=600, value=250, step=10)
     with col_a3:
         seed = st.number_input("Random seed (optional)", value=42, step=1)
-        duration_mode = st.radio("Regime duration input", ["percentage", "absolute"], index=0, horizontal=True)
-        reg_count = st.slider("Number of regimes", min_value=1, max_value=5, value=2, step=1)
 
-    regimes: list[Regime] = []
-    st.caption("Define regimes (they are normalized to fill the total horizon).")
-    for i in range(reg_count):
-        with st.expander(f"Regime {i + 1}", expanded=i < 2):
-            if duration_mode == "percentage":
-                share = st.number_input(
-                    "Time share (%)",
-                    min_value=0.1,
-                    max_value=100.0,
-                    value=round(100.0 / reg_count, 1),
-                    step=1.0,
-                    key=f"reg_share_{i}",
-                )
-                fraction = share / 100.0
-            else:
-                duration_units = st.number_input(
-                    f"Duration ({'days' if time_mode == 'Trading days' else 'minutes'})",
-                    min_value=0.1,
-                    value=float(max(1.0, maturity_units / reg_count)),
-                    step=1.0,
-                    key=f"reg_duration_{i}",
-                )
-                total_units = float(maturity_units)
-                fraction = max(duration_units, 0.0) / total_units if total_units > 0 else 0.0
-            reg_drift = st.number_input(
-                "Drift",
-                value=base_drift,
-                step=0.01,
-                format="%.4f",
-                key=f"reg_drift_{i}",
-            )
-            reg_vol = st.number_input(
-                "Volatility",
-                value=base_vol,
-                min_value=0.0001,
-                step=0.01,
-                format="%.4f",
-                key=f"reg_vol_{i}",
-            )
-            reg_rf = st.number_input(
-                "Risk-free rate",
-                value=base_risk_free,
-                step=0.005,
-                format="%.4f",
-                key=f"reg_rf_{i}",
-            )
-            regimes.append(Regime(fraction=fraction, drift=reg_drift, implied_vol=reg_vol, risk_free=reg_rf))
-
+    with st.expander("Advanced Heston / dynamic drift"):
+        h_col1, h_col2 = st.columns(2)
+        with h_col1:
+            h_kappa = st.number_input("Heston kappa", value=2.5, min_value=0.0001, step=0.1, format="%.4f")
+            h_theta = st.number_input("Heston theta (var level)", value=base_vol * base_vol, min_value=0.0001, step=0.01, format="%.4f")
+            h_xi = st.number_input("Heston vol-of-vol (xi)", value=0.45, min_value=0.0001, step=0.01, format="%.4f")
+        with h_col2:
+            h_rho = st.number_input("Heston rho (spot/var)", value=-0.7, min_value=-0.999, max_value=0.999, step=0.05, format="%.3f")
+            mu_bar = st.number_input("OU long-run mu_bar", value=base_drift, step=0.01, format="%.4f")
+            alpha = st.number_input("OU mean reversion (alpha)", value=1.5, min_value=0.0001, step=0.1, format="%.4f")
+            sigma_mu = st.number_input("OU drift vol (sigma_mu)", value=0.05, min_value=0.0001, step=0.01, format="%.4f")
+            rho_mu_s = st.number_input("Corr(dW, dB) rho_muS", value=-0.3, min_value=-0.999, max_value=0.999, step=0.05, format="%.3f")
+    dynamic_params = {
+        "kappa": h_kappa,
+        "theta": h_theta,
+        "xi": h_xi,
+        "rho": h_rho,
+        "mu0": base_drift,
+        "mu_bar": mu_bar,
+        "alpha": alpha,
+        "sigma_mu": sigma_mu,
+        "rho_mu_s": rho_mu_s,
+    }
     maturity_years = maturity_units / time_scale
-    if regimes:
-        total_fraction = sum(max(r.fraction, 0.0) for r in regimes)
-        if total_fraction > 0:
-            norm = [max(r.fraction, 0.0) / total_fraction for r in regimes]
-        else:
-            norm = [1.0 / len(regimes)] * len(regimes)
-        intervals = []
-        start_unit = 0.0
-        unit_label = "days" if time_mode == "Trading days" else "minutes"
-        for i, frac in enumerate(norm):
-            end_unit = start_unit + frac * maturity_units
-            start_display = int(math.floor(start_unit)) + 1
-            end_display = int(round(end_unit if i < len(norm) - 1 else maturity_units))
-            intervals.append(f"Regime {i + 1}: {start_display} - {end_display} {unit_label}")
-            start_unit = end_unit
-        st.caption("Regime windows: " + "; ".join(intervals))
-    params = BSParams(
-        spot=spot,
-        strike=spot,
-        maturity_years=maturity_years,
-        risk_free_rate=base_risk_free,
-        implied_vol=base_vol,
-        drift=base_drift,
-        steps=int(steps),
-        option_type="call",
-        option_style="european",
-        binomial_steps=int(binom_steps),
+    cfg = SimConfig(
+        S0=spot,
+        r=base_risk_free,
+        q=0.0,
+        sigma0=base_vol,
+        T_max=maturity_years,
+        n_steps=int(steps),
+        n_paths=1,
+        heston=HestonParams(
+            kappa=dynamic_params["kappa"],
+            theta=dynamic_params["theta"],
+            xi=dynamic_params["xi"],
+            rho=dynamic_params["rho"],
+        ),
+        drift_model="ou",
+        ou_params=OUDriftParams(
+            mu0=dynamic_params["mu0"],
+            alpha=dynamic_params["alpha"],
+            mu_bar=dynamic_params["mu_bar"],
+            sigma_mu=dynamic_params["sigma_mu"],
+            rho_mu_s=dynamic_params["rho_mu_s"],
+        ),
         seed=int(seed),
     )
-
-    time_grid, stock_path, risk_path, vol_path = simulate_stock_path(params, regimes=regimes)
+    sim_res = simulate_paths(cfg, risk_neutral=False)
+    time_grid = sim_res["time"]
+    stock_path = sim_res["S"][:, 0]
+    vol_path = np.sqrt(np.maximum(sim_res["v"][:, 0], 0.0))
+    risk_path = np.full_like(time_grid, base_risk_free, dtype=float)
+    mu_path = sim_res["mu"][:, 0]
     time_axis = time_grid * time_scale
 
     stock_view = st.radio("Stock price view", ["Line", "Candles"], index=0, horizontal=True, key="stock_view_mode")
@@ -815,32 +789,19 @@ def run_streamlit_app() -> None:
         template="plotly_white",
         height=420,
     )
-    # Add regime shading for visibility
-    if regimes:
-        total_fraction = sum(max(r.fraction, 0.0) for r in regimes)
-        norm = [max(r.fraction, 0.0) / total_fraction if total_fraction > 0 else 1 / len(regimes) for r in regimes]
-        start = 0.0
-        colors = ["rgba(0,0,0,0.05)", "rgba(0,0,255,0.05)", "rgba(0,128,0,0.05)", "rgba(255,165,0,0.08)", "rgba(128,0,128,0.08)"]
-        for i, frac in enumerate(norm):
-            end = start + frac * maturity_units
-            stock_fig.add_vrect(
-                x0=start,
-                x1=end,
-                fillcolor=colors[i % len(colors)],
-                opacity=0.25,
-                line_width=0,
-                layer="below",
-            )
-            stock_fig.add_annotation(
-                x=(start + end) / 2,
-                y=max(stock_path),
-                text=f"Reg {i + 1}",
-                showarrow=False,
-                yshift=10,
-                font=dict(color="gray", size=10),
-            )
-            start = end
     st.plotly_chart(stock_fig, use_container_width=True)
+    iv_mu_fig = go.Figure()
+    iv_mu_fig.add_trace(go.Scatter(x=time_axis, y=vol_path, name="Implied vol (σ)", line=dict(color="orange")))
+    iv_mu_fig.add_trace(go.Scatter(x=time_axis, y=mu_path, name="Drift (μ)", line=dict(color="green")))
+    iv_mu_fig.update_layout(
+        title="Expected IV and Drift vs Time",
+        xaxis_title=time_label,
+        yaxis_title="Level",
+        hovermode="x unified",
+        template="plotly_white",
+        height=320,
+    )
+    st.plotly_chart(iv_mu_fig, use_container_width=True)
 
     # -----------------------------------------
     # Part 2: Option Price Path and Chain
@@ -863,7 +824,7 @@ def run_streamlit_app() -> None:
     spot_now = float(stock_path[idx])
     rf_now = float(risk_path[idx])
     vol_now = float(vol_path[idx])
-    remaining_years = max(params.maturity_years - current_time, 0.0)
+    remaining_years = max(maturity_years - current_time, 0.0)
     remaining_units = remaining_years * time_scale
 
     option_type_path = st.selectbox(
@@ -905,12 +866,12 @@ def run_streamlit_app() -> None:
         maturity_years=option_maturity_years,
         risk_free_rate=rf_now,
         implied_vol=vol_now,
-        drift=params.drift,
-        steps=max(20, int(params.steps * option_maturity_years / params.maturity_years)) if params.maturity_years > 0 else 200,
+        drift=mu_path[idx],
+        steps=max(20, int(steps * option_maturity_years / maturity_years)) if maturity_years > 0 else 200,
         option_type=option_type_path,  # type: ignore[arg-type]
         option_style=pricing_style,  # type: ignore[arg-type]
-        binomial_steps=params.binomial_steps,
-        seed=params.seed,
+        binomial_steps=int(binom_steps),
+        seed=int(seed),
     )
 
     chain_wide = build_option_chain(
@@ -1155,49 +1116,6 @@ def run_streamlit_app() -> None:
         hovermode="x unified",
         template="plotly_white",
         height=420,
-    )
-    st.plotly_chart(mtm_fig, use_container_width=True)
-
-    values_path, pnl_path, initial_cost = strategy_value_over_time(
-        time_grid, stock_path, legs, params, strategy_style
-    )
-    st.subheader("Mark-to-market P/L along simulated path")
-    step = max(1, len(time_axis) // 400)
-    t_idx = st.slider(
-        "Inspect P/L at step",
-        min_value=0,
-        max_value=len(time_axis) - 1,
-        value=min(len(time_axis) - 1, len(time_axis) // 3),
-        step=step,
-    )
-    st.caption(
-        "Question to ask: with this DTE setup, what is the P/L t time after opening? "
-        "Use the slider to inspect any intermediate time before expiry."
-    )
-    t_label = f"{time_axis[t_idx]:.1f} (trading days)" if time_mode == "Trading days" else f"{time_axis[t_idx]:.0f} minutes"
-    st.metric(
-        f"P/L at t={t_label}",
-        f"{pnl_path[t_idx]:.2f}",
-        help="P/L uses mark-to-market pricing for remaining time, not just intrinsic.",
-    )
-    mtm_fig = go.Figure()
-    mtm_fig.add_trace(
-        go.Scatter(
-            x=time_axis,
-            y=pnl_path,
-            name="P/L over time",
-            line=dict(color="teal"),
-        )
-    )
-    mtm_fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="gray")
-    mtm_fig.add_vline(x=time_axis[t_idx], line_width=1, line_dash="dash", line_color="black")
-    mtm_fig.update_layout(
-        title="Strategy P/L before expiry (mark-to-market)",
-        xaxis_title=time_label,
-        yaxis_title="P/L",
-        hovermode="x unified",
-        template="plotly_white",
-        height=450,
     )
     st.plotly_chart(mtm_fig, use_container_width=True)
 
