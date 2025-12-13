@@ -1,30 +1,29 @@
-# Option_value_simulation & Option Pricing Visualizer
-Black–Scholes option pricing path visualizer.  This script simulates a stock path under geometric Brownian motion and computes the corresponding Black–Scholes option price as time decays. 
-Interactive Black–Scholes / binomial option pricer with a simulated geometric Brownian stock path.
+# Volatility Strategy Simulator
 
-## What it does
-- Simulates a stock path under GBM using user-defined drift/vol/steps and seed.
-- Prices a call/put along the path: European via closed-form Black–Scholes, American via a CRR binomial tree with early exercise.
-- Displays stock, option price, and time value (extrinsic) versus time (trading days or intraday minutes).
+Streamlit app for simulating a stock path with dynamic drift/vol (Heston + OU drift) and exploring option chains and multi‑leg strategies with mark‑to‑market P/L.
 
-## Quick start
+## Features
+- Heston variance with OU drift (dynamic μ and σ) driven by user inputs; single simulated path used throughout the app.
+- Stock path chart with optional candlesticks plus overlay plots of simulated drift and implied vol.
+- Option price path from any chosen time point and expiry; configurable pricing style (European/Black–Scholes, American/binomial), strike spacing/depth, and option type.
+- Option chain with Delta/Gamma and time value; pick legs directly from the chain.
+- Strategy builder with integer quantities (long/short), expiry payoff, and mark‑to‑market P/L before expiry.
+
+## Run
 From the project root:
 ```bash
 streamlit run bs_visualization.py
 ```
-Open the local URL shown in the terminal (default http://localhost:8501).
+Open the URL shown in the terminal (default http://localhost:8501).
 
-## Controls (sidebar)
-- Spot, Strike, Option type (call/put)
-- Style: European (BS) or American (binomial)
-- Time mode: trading days or minutes to expiry
-- Risk-free rate, Implied volatility (used for both diffusion and pricing)
-- Simulated stock drift
-- Path steps (GBM path resolution)
-- Binomial steps (American tree depth)
-- Random seed
+## Inputs
+- Spot, initial drift μ0, initial implied vol σ0, risk‑free rate
+- Horizon (trading days or minutes), path steps, random seed
+- Advanced (expander): Heston κ/θ/ξ/ρ and OU μ̄/α/σμ/ρμS
+- Part 2: select time index on the path, option type, expiry length, pricing style, strike spacing/depth
+- Part 3: select legs from the chain, set integer qty (negative for shorts)
 
 ## Notes
-- Time value is reported as option price minus intrinsic at each node.
-- Minutes mode converts minutes to expiry into the correct year fraction using 252 trading days × 390 minutes/day.
-- If you prefer a static plot without Streamlit, import and call `straddle_bet.bs_visualization.main()`.
+- The simulator uses the dynamic engine from `dynamic_iv_sim.py`; regimes/GBM are no longer used.
+- Option pricing along the path uses the simulated drift/vol at the selected time; risk‑free is constant.
+- Candlestick intervals can be toggled (hour/day/week/month/quarter/year) for stock and option views.
